@@ -1,5 +1,4 @@
 # 02-Team Repo
-Template for team repo
 
 <p align="center">
 <img src="./images/Team 16.jpg" width="50%">
