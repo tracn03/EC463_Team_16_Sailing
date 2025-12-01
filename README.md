@@ -1,4 +1,4 @@
-# 02-Team Repo
+# BO-AT
 
 <p align="center">
 <img src="./images/Team 16.jpg" width="50%">
