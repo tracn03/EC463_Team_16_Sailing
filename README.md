@@ -14,7 +14,7 @@ BO-ATs got you!
 </p>
 
 
-[![BO-AT Demo](https://img.youtube.com/vi/op7CBjfP-04/maxresdefault.jpg)](https://www.youtube.com/watch?v=op7CBjfP-04)
+[![BO-AT Demo](./images/beautifulboatshot.jpeg)](https://www.youtube.com/watch?v=op7CBjfP-04)
 
 ## Project Description
 The goal of this project is to develop an autonomous sailing research vessel for long-duration environmental monitoring missions. We're building a wind-powered platform with GPS waypoint navigation, partnering with Woods Hole Oceanographic Institution to deploy RF transmitters for NOAA weather radar calibration. 
