@@ -1,10 +1,10 @@
 # BO-AT
 
 <p align="center">
-<img src="./images/Team 16.jpg" width="50%">
+<img src="./images/Team 16 group photo.jpg" width="50%">
 </p>
 <p align="center">
-This is my team
+The BO-AT Team
 </p>
 
 ## Project Description
