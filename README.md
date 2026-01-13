@@ -1,13 +1,6 @@
 # BO-AT
 
-<p align="center">
-<img src="./images/Team 16 group photo.jpg" width="50%">
-</p>
-<p align="center">
-The BO-AT Team
-</p>
-
-Need calibration to be done off the coast? ... etc
+Need calibration to be done off the coast of protected land? Need to conduct a long term ocean research mission? Whatever it is ...
 
 <p align="center">
 BO-ATs got you!
@@ -21,7 +14,7 @@ Click the image below to watch the demonstration:
 
 
 ## Project Description
-The goal of this project is to develop an autonomous sailing research vessel for long-duration environmental monitoring missions. We're building a wind-powered platform with GPS waypoint navigation, partnering with Woods Hole Oceanographic Institution to deploy RF transmitters for NOAA weather radar calibration. 
+BO-AT an autonomous sailing research vessel for long-duration environmental monitoring missions. We're building a wind-powered platform with GPS waypoint navigation, partnering with Woods Hole Oceanographic Institution to deploy RF transmitters for NOAA weather radar calibration. The design includes a 4' long monohull, removable weighted keel for easy transport, and a 130W thruster for failsafe operation.
 
 Deliverables include: 
 - An intermediate, motor driven vessel, prototype [COMPLETED 12/06/2025]
@@ -33,6 +26,14 @@ Deliverables include:
 - Web UI hosted on a public server
 
 - Test results for weather radar calibration
+
+<p align="center">
+<img src="./images/Team 16 group photo.jpg" width="50%">
+</p>
+<p align="center">
+The BO-AT Team
+</p>
+Thank you for viewing our project!
 
 ## Team links
 - [Team Google Drive](https://drive.google.com/drive/folders/1DOMSv3BQg_NJUjcH5m1vT1EV-Kz_XhOu?usp=sharing)
