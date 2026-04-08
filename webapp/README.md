@@ -1,6 +1,6 @@
 # BO-AT Mission Planner
 
-A web-based mission planner for an autonomous RC sailboat. The frontend provides an interactive map for building waypoint missions, and the backend communicates with a Pixhawk autopilot over a SiK telemetry radio using MAVLink.
+A web-based mission planner for BO-AT. The frontend provides an interactive map for building waypoint missions, and the backend communicates with a Pixhawk autopilot over a SiK telemetry radio using MAVLink.
 
 ## Stack
 
@@ -14,23 +14,7 @@ A web-based mission planner for an autonomous RC sailboat. The frontend provides
 
 ## Launching the App
 
-### Option 1 — Docker (recommended)
-
-Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-
-```bash
-docker compose up --build
-```
-
-Then open [http://localhost:3000](http://localhost:3000).
-
-**On a Raspberry Pi** (with USB SiK radio attached):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
-```
-
-### Option 2 — Manual
+### Option 1 — Manual
 
 **Backend:**
 
@@ -51,6 +35,22 @@ npm run dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000).
+
+### Option 2 — Docker (WIP)
+
+Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+```bash
+docker compose up --build
+```
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+**On a Raspberry Pi** (with USB SiK radio attached):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
+```
 
 ---
 
