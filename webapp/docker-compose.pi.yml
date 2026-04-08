@@ -1,0 +1,13 @@
+# Raspberry Pi overlay — apply on top of docker-compose.yml for Pi deployment:
+#   docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
+#
+# This adds USB serial device passthrough, which works on Linux (Pi) but not on
+# macOS Docker Desktop due to its VM layer.
+
+services:
+  server:
+    devices:
+      # TODO: Confirm the correct device path on your Pi before deploying.
+      # Common options: /dev/ttyUSB0 (SiK over USB), /dev/ttyAMA0 (UART/GPIO).
+      # Also update SERIAL_PORT in server/mavlink_connection.py to match.
+      - /dev/ttyUSB0:/dev/ttyUSB0

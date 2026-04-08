@@ -1,0 +1,29 @@
+services:
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    # NOTE: No device passthrough here — Docker Desktop on macOS cannot pass USB serial
+    # devices through its VM layer. Device passthrough is handled in docker-compose.pi.yml,
+    # which is used only when deploying to the Raspberry Pi (Linux host).
+    # TODO: Add a volume to persist the SQLite database across container restarts.
+    # This requires updating server/database.py to write to a subdirectory, e.g.:
+    #   volumes:
+    #     - db_data:/app/data
+    # and changing the DB URL to sqlite:///./data/boat_missions.db
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./my-app
+      args:
+        # TODO: When deploying to Raspberry Pi, set these to the Pi's IP so other
+        # machines on the network can reach the backend. Rebuild the image after changing.
+        # e.g. NEXT_PUBLIC_API_URL: http://192.168.1.x:8000/api
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api
+        NEXT_PUBLIC_WS_URL: ws://localhost:8000/api/telemetry/ws
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+    restart: unless-stopped
