@@ -60,6 +60,9 @@ docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
 - macOS: `/dev/cu.usbserial-DN05YS5Z` (default)
 - Raspberry Pi: `/dev/ttyUSB0` or `/dev/ttyAMA0`
 
+To find the serial port of the SiK radio, go into your terminal and run:
+ls /dev/cu.*
+
 Also update the device path in `docker-compose.pi.yml` to match.
 
 **Frontend API URL** — set in `my-app/.env.local`:
