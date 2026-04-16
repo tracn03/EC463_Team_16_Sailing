@@ -53,3 +53,13 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# Database
+*.db
