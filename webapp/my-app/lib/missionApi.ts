@@ -125,6 +125,64 @@ export async function setVehicleMode(mode: VehicleMode): Promise<{ message: stri
   });
 }
 
+// ── Geofence types & endpoints ───────────────────────────────────────────────
+
+export type FenceType = 'inclusion' | 'exclusion';
+
+export interface FenceVertexIn {
+  latitude: number;
+  longitude: number;
+}
+
+export interface FenceIn {
+  fence_type: FenceType;
+  vertices: FenceVertexIn[];
+}
+
+export interface FenceVertexOut {
+  id: number;
+  sequence: number;
+  latitude: number;
+  longitude: number;
+}
+
+export interface FenceOut {
+  id: number;
+  fence_type: FenceType;
+  vertices: FenceVertexOut[];
+}
+
+export interface FenceUploadResult {
+  message: string;
+  fence_count: number;
+  item_count: number;
+}
+
+/** List all geofences for a saved mission. */
+export async function listFences(missionId: number): Promise<FenceOut[]> {
+  return apiFetch<FenceOut[]>(`/missions/${missionId}/fences`);
+}
+
+/** Save a new geofence polygon for a mission. */
+export async function createFence(missionId: number, payload: FenceIn): Promise<FenceOut> {
+  return apiFetch<FenceOut>(`/missions/${missionId}/fences`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Delete a geofence polygon. */
+export async function deleteFenceFromMission(missionId: number, fenceId: number): Promise<void> {
+  return apiFetch<void>(`/missions/${missionId}/fences/${fenceId}`, { method: 'DELETE' });
+}
+
+/** Upload all geofences for a mission to the Pixhawk. Sets FENCE_ENABLE + FENCE_ACTION=RTL. */
+export async function uploadFencesToPixhawk(missionId: number): Promise<FenceUploadResult> {
+  return apiFetch<FenceUploadResult>(`/missions/${missionId}/fences/upload`, { method: 'POST' });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Download a mission as a .waypoints file compatible with Mission Planner.
  * Triggers a browser file download.

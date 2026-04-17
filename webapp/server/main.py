@@ -10,6 +10,7 @@ from mavlink_connection import mavlink_conn
 from routers import missions
 from routers import telemetry
 from routers import vehicle
+from routers import fences
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ app.add_middleware(
 )
 
 app.include_router(missions.router, prefix="/api/missions", tags=["missions"])
+app.include_router(fences.router,   prefix="/api/missions", tags=["fences"])
 app.include_router(telemetry.router, prefix="/api/telemetry", tags=["telemetry"])
 app.include_router(vehicle.router,   prefix="/api/vehicle",   tags=["vehicle"])
 

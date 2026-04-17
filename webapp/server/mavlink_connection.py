@@ -300,6 +300,138 @@ class MAVLinkConnection:
             finally:
                 self._upload_paused.clear()
 
+    def upload_fence(self, fence_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Upload geofence items to ArduRover via the MAVLink fence protocol
+        (MAV_MISSION_TYPE_FENCE = 1).
+
+        fence_items: list of dicts with keys:
+            command     - 208 (inclusion polygon vertex) or 209 (exclusion polygon vertex)
+            vertex_count - total vertex count for the polygon this vertex belongs to
+            latitude    - float degrees
+            longitude   - float degrees
+
+        Sending count=0 clears all fences on the FC.
+        Returns {'success': bool, 'message': str}.
+        """
+        if not self._connection:
+            return {"success": False, "message": "Not connected to Pixhawk"}
+
+        count = len(fence_items)
+
+        # MAV_MISSION_TYPE_FENCE = 1
+        FENCE_TYPE = 1
+
+        with self._upload_lock:
+            self._upload_paused.set()
+            time.sleep(0.15)
+            try:
+                target_sys = self._connection.target_system
+                target_comp = self._connection.target_component
+
+                logger.info("Uploading %d fence items to system %d...", count, target_sys)
+                self._connection.mav.mission_count_send(target_sys, target_comp, count, FENCE_TYPE)
+
+                if count == 0:
+                    msg = self._connection.recv_match(
+                        type="MISSION_ACK", blocking=True, timeout=5.0
+                    )
+                    if msg and msg.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
+                        logger.info("Fence cleared.")
+                        return {"success": True, "message": "Fence cleared on Pixhawk"}
+                    return {"success": False, "message": "Fence clear not acknowledged by Pixhawk"}
+
+                while True:
+                    msg = self._connection.recv_match(
+                        type=["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"],
+                        blocking=True,
+                        timeout=5.0,
+                    )
+                    if msg is None:
+                        return {"success": False, "message": "Timeout waiting for Pixhawk fence response"}
+
+                    msg_type = msg.get_type()
+
+                    if msg_type == "MISSION_ACK":
+                        if msg.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
+                            logger.info("Fence upload accepted by Pixhawk.")
+                            return {"success": True, "message": f"Uploaded {count} fence items successfully"}
+                        return {
+                            "success": False,
+                            "message": f"Fence upload rejected by Pixhawk (code {msg.type})",
+                        }
+
+                    if msg_type in ("MISSION_REQUEST", "MISSION_REQUEST_INT"):
+                        seq = msg.seq
+                        if seq >= count:
+                            return {
+                                "success": False,
+                                "message": f"Pixhawk requested fence seq {seq} but only {count} items exist",
+                            }
+                        item = fence_items[seq]
+                        self._connection.mav.mission_item_int_send(
+                            target_sys,
+                            target_comp,
+                            seq,
+                            0,                              # MAV_FRAME_GLOBAL
+                            int(item["command"]),           # 208 inclusion / 209 exclusion
+                            0,                              # current
+                            1,                              # autocontinue
+                            float(item["vertex_count"]),    # param1 = total vertices in this polygon
+                            0.0, 0.0, 0.0,                 # param2-4 unused
+                            int(float(item["latitude"]) * 1e7),
+                            int(float(item["longitude"]) * 1e7),
+                            0.0,                            # altitude unused for fence
+                            FENCE_TYPE,
+                        )
+                        logger.debug("Sent fence item seq=%d cmd=%d", seq, item["command"])
+
+            except Exception as exc:
+                logger.error("Fence upload error: %s", exc)
+                return {"success": False, "message": f"Fence upload error: {exc}"}
+            finally:
+                self._upload_paused.clear()
+
+    def set_fence_params(self, enable: bool = True, action: int = 1) -> Dict[str, Any]:
+        """
+        Set ArduRover fence parameters via PARAM_SET.
+        action: 0=report only, 1=RTL or HOLD, 2=HOLD
+        """
+        if not self._connection:
+            return {"success": False, "message": "Not connected to Pixhawk"}
+
+        with self._upload_lock:
+            self._upload_paused.set()
+            time.sleep(0.1)
+            try:
+                target_sys = self._connection.target_system
+                target_comp = self._connection.target_component
+
+                params = [
+                    ("FENCE_ENABLE", 1.0 if enable else 0.0),
+                    ("FENCE_ACTION", float(action)),
+                ]
+                for param_id, value in params:
+                    self._connection.mav.param_set_send(
+                        target_sys,
+                        target_comp,
+                        param_id.encode(),
+                        value,
+                        mavutil.mavlink.MAV_PARAM_TYPE_INT8,
+                    )
+                    # Wait for PARAM_VALUE echo; non-fatal if it times out
+                    self._connection.recv_match(
+                        type="PARAM_VALUE", blocking=True, timeout=2.0
+                    )
+                    logger.info("Set %s = %s", param_id, value)
+
+                return {"success": True, "message": "Fence parameters set (FENCE_ENABLE, FENCE_ACTION)"}
+            except Exception as exc:
+                logger.error("Set fence params error: %s", exc)
+                return {"success": False, "message": str(exc)}
+            finally:
+                self._upload_paused.clear()
+
     def arm(self, do_arm: bool, force: bool = False) -> Dict[str, Any]:
         """
         Arm or disarm the vehicle.

@@ -1,11 +1,23 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Play, Navigation, Battery, Wind, Gauge, Save, Download, Upload, CheckCircle, MapPin } from 'lucide-react';
-import { saveMission, exportMissionFile, uploadMissionToPixhawk, armVehicle, forceArmVehicle, disarmVehicle, setVehicleMode, type VehicleMode } from '@/lib/missionApi';
+import { saveMission, exportMissionFile, uploadMissionToPixhawk, armVehicle, forceArmVehicle, disarmVehicle, setVehicleMode, createFence, uploadFencesToPixhawk, type VehicleMode } from '@/lib/missionApi';
+import type { FenceZone } from './components/MapComponent';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:8000/api/telemetry/ws';
+
+/** Secure-context-safe UUID. Falls back to Math.random when crypto.randomUUID is unavailable. */
+function genId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
 
 interface TelemetryData {
   connected: boolean;
@@ -254,6 +266,13 @@ export default function MissionPlanner() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
 
+  // ── Geofencing state ────────────────────────────────────────────────────────
+  type FenceDrawingMode = 'inclusion' | 'exclusion' | null;
+  const [fences, setFences] = useState<FenceZone[]>([]);
+  const [fenceDrawingMode, setFenceDrawingMode] = useState<FenceDrawingMode>(null);
+  const [pendingFenceVertices, setPendingFenceVertices] = useState<{ lat: number; lng: number }[]>([]);
+  const [fenceUploadError, setFenceUploadError] = useState<string | null>(null);
+
   // Vehicle control state
   const [vehicleLoading, setVehicleLoading] = useState<'arm' | 'forceArm' | 'disarm' | 'mode' | null>(null);
   const [vehicleError, setVehicleError] = useState<string | null>(null);
@@ -299,22 +318,30 @@ export default function MissionPlanner() {
     };
   }, []);
 
+  // When in fence-drawing mode, map clicks add fence vertices instead of waypoints.
+  // fenceDrawingMode is read inside the function; the onMapClickRef in MapComponent
+  // always holds the latest version so switching modes takes effect immediately.
   const handleMapClick = (lat: number, lng: number) => {
-    setWaypoints(prevWaypoints => {
-      const newWaypoint: Waypoint = {
-        id: crypto.randomUUID(),
-        lat,
-        lng,
-        order: prevWaypoints.length + 1
-      };
-      return [...prevWaypoints, newWaypoint];
-    });
+    if (fenceDrawingMode) {
+      setPendingFenceVertices(prev => [...prev, { lat, lng }]);
+    } else {
+      setWaypoints(prevWaypoints => {
+        const newWaypoint: Waypoint = {
+          id: genId(),
+          lat,
+          lng,
+          order: prevWaypoints.length + 1,
+        };
+        return [...prevWaypoints, newWaypoint];
+      });
+    }
   };
 
   async function runUpload(setRunning: boolean) {
     if (waypoints.length === 0) return;
     setIsUploading(true);
     setApiError(null);
+    setFenceUploadError(null);
     setUploadSuccess(false);
     try {
       const mission = await saveMission({
@@ -322,7 +349,24 @@ export default function MissionPlanner() {
         waypoints: waypoints.map(wp => ({ latitude: wp.lat, longitude: wp.lng })),
       });
       setSavedMissionId(mission.id);
+
+      // Save all fence polygons to the new mission record
+      for (const fence of fences) {
+        await createFence(mission.id, {
+          fence_type: fence.type,
+          vertices: fence.vertices.map(v => ({ latitude: v.lat, longitude: v.lng })),
+        });
+      }
+
       await uploadMissionToPixhawk(mission.id);
+
+      // Upload fences (even if empty — sends count=0 to clear FC's existing fence)
+      try {
+        await uploadFencesToPixhawk(mission.id);
+      } catch (fenceErr) {
+        setFenceUploadError(fenceErr instanceof Error ? fenceErr.message : 'Fence upload failed');
+      }
+
       if (setRunning) setStatus('running');
       setUploadSuccess(true);
       setTimeout(() => setUploadSuccess(false), 3000);
@@ -368,6 +412,10 @@ export default function MissionPlanner() {
 
   const handleReset = () => {
     setWaypoints([]);
+    setFences([]);
+    setFenceDrawingMode(null);
+    setPendingFenceVertices([]);
+    setFenceUploadError(null);
     setStatus('idle');
     setSavedMissionId(null);
     setApiError(null);
@@ -431,12 +479,47 @@ export default function MissionPlanner() {
 
   // ─────────────────────────────────────────────────────────────────────────
 
-  const removeWaypoint = (id: string) => {
-    setWaypoints(prevWaypoints => {
-      const filtered = prevWaypoints.filter(wp => wp.id !== id);
+  // useCallback with empty deps: uses functional updater so setWaypoints never
+  // needs to be in the dep array. Stable reference prevents the markers useEffect
+  // in MapComponent from re-running on every telemetry tick (fixes popup bug).
+  const removeWaypoint = useCallback((id: string) => {
+    setWaypoints(prev => {
+      const filtered = prev.filter(wp => wp.id !== id);
       return filtered.map((wp, index) => ({ ...wp, order: index + 1 }));
     });
-  };
+  }, []);
+
+  // ── Fence drawing handlers ────────────────────────────────────────────────
+
+  const handleFinishFence = useCallback(() => {
+    if (pendingFenceVertices.length < 3 || !fenceDrawingMode) return;
+    setFences(prev => [
+      ...prev,
+      {
+        id: genId(),
+        type: fenceDrawingMode,
+        vertices: [...pendingFenceVertices],
+      },
+    ]);
+    setPendingFenceVertices([]);
+    setFenceDrawingMode(null);
+  }, [pendingFenceVertices, fenceDrawingMode]);
+
+  const handleCancelFence = useCallback(() => {
+    setPendingFenceVertices([]);
+    setFenceDrawingMode(null);
+  }, []);
+
+  const handleDeleteFence = useCallback((fenceId: string) => {
+    setFences(prev => prev.filter(f => f.id !== fenceId));
+  }, []);
+
+  const pendingFence = useMemo(() =>
+    fenceDrawingMode
+      ? { type: fenceDrawingMode, vertices: pendingFenceVertices }
+      : null,
+    [fenceDrawingMode, pendingFenceVertices]
+  );
 
   const vesselPosition = useMemo(() => {
     const { gps_lat, gps_lon, gps_heading_deg, gps_fix } = telemetry;
@@ -491,6 +574,9 @@ export default function MissionPlanner() {
                   : undefined
               }
               vesselPosition={vesselPosition}
+              fences={fences}
+              pendingFence={pendingFence}
+              isDrawingFence={fenceDrawingMode !== null}
             />
           </div>
 
@@ -849,6 +935,120 @@ export default function MissionPlanner() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* ── Geofences ───────────────────────────────────────────── */}
+            <div>
+              <h2 className="text-xl font-bold text-slate-800 mb-4">Geofences</h2>
+
+              {/* Drawing mode active */}
+              {fenceDrawingMode ? (
+                <div className={`rounded-lg p-3 mb-3 border ${
+                  fenceDrawingMode === 'inclusion'
+                    ? 'bg-emerald-50 border-emerald-300'
+                    : 'bg-red-50 border-red-300'
+                }`}>
+                  <p className={`text-sm font-semibold mb-1 ${
+                    fenceDrawingMode === 'inclusion' ? 'text-emerald-800' : 'text-red-800'
+                  }`}>
+                    Drawing {fenceDrawingMode === 'inclusion' ? 'Inclusion' : 'Exclusion'} Zone
+                  </p>
+                  <p className={`text-xs mb-3 ${
+                    fenceDrawingMode === 'inclusion' ? 'text-emerald-700' : 'text-red-700'
+                  }`}>
+                    {pendingFenceVertices.length === 0
+                      ? 'Click the map to place the first vertex.'
+                      : `${pendingFenceVertices.length} ${pendingFenceVertices.length === 1 ? 'vertex' : 'vertices'} placed — ${pendingFenceVertices.length < 3 ? `need ${3 - pendingFenceVertices.length} more` : 'ready to finish'}`}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleFinishFence}
+                      disabled={pendingFenceVertices.length < 3}
+                      className={`flex-1 py-1.5 px-3 rounded-md text-xs font-semibold transition-colors ${
+                        fenceDrawingMode === 'inclusion'
+                          ? 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-200 text-white'
+                          : 'bg-red-500 hover:bg-red-600 disabled:bg-red-200 text-white'
+                      }`}
+                    >
+                      Finish Polygon
+                    </button>
+                    <button
+                      onClick={handleCancelFence}
+                      className="flex-1 py-1.5 px-3 rounded-md text-xs font-semibold bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2 mb-3">
+                  <button
+                    onClick={() => setFenceDrawingMode('inclusion')}
+                    className="flex-1 py-2 px-3 rounded-lg text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 transition-colors"
+                  >
+                    + Inclusion Zone
+                  </button>
+                  <button
+                    onClick={() => setFenceDrawingMode('exclusion')}
+                    className="flex-1 py-2 px-3 rounded-lg text-xs font-semibold bg-red-50 hover:bg-red-100 text-red-700 border border-red-300 transition-colors"
+                  >
+                    + Exclusion Zone
+                  </button>
+                </div>
+              )}
+
+              {/* Fence list */}
+              {fences.length > 0 ? (
+                <div className="space-y-1.5 mb-3">
+                  {fences.map((fence, i) => (
+                    <div
+                      key={fence.id}
+                      className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+                        fence.type === 'inclusion'
+                          ? 'bg-emerald-50 border border-emerald-200'
+                          : 'bg-red-50 border border-red-200'
+                      }`}
+                    >
+                      <span className={`w-3 h-3 rounded-sm flex-shrink-0 ${
+                        fence.type === 'inclusion' ? 'bg-emerald-500' : 'bg-red-500'
+                      }`} />
+                      <span className={`flex-1 font-medium text-xs ${
+                        fence.type === 'inclusion' ? 'text-emerald-800' : 'text-red-800'
+                      }`}>
+                        {fence.type === 'inclusion' ? 'Inclusion' : 'Exclusion'} #{i + 1}
+                        <span className="font-normal ml-1 opacity-70">
+                          ({fence.vertices.length} vertices)
+                        </span>
+                      </span>
+                      <button
+                        onClick={() => handleDeleteFence(fence.id)}
+                        className="text-slate-400 hover:text-red-500 transition-colors"
+                        title="Delete fence"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : !fenceDrawingMode ? (
+                <p className="text-xs text-slate-400 mb-3 text-center py-3 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                  No fences — draw a zone to restrict the vessel&apos;s area
+                </p>
+              ) : null}
+
+              {/* Fence upload error */}
+              {fenceUploadError && (
+                <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                  Fence upload warning: {fenceUploadError}
+                </p>
+              )}
+
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Fences are uploaded to the Pixhawk when you start the mission.
+                ArduPilot enforces them in hardware and returns to launch on breach.
+              </p>
             </div>
 
             {/* Waypoints List */}
