@@ -432,6 +432,82 @@ class MAVLinkConnection:
             finally:
                 self._upload_paused.clear()
 
+    def get_param(self, param_id: str, timeout: float = 3.0) -> Dict[str, Any]:
+        """
+        Read a single parameter from the vehicle via PARAM_REQUEST_READ.
+        Returns {"success": True, "value": <float>} or {"success": False, "message": ...}.
+        """
+        if not self._connection:
+            return {"success": False, "message": "Not connected to Pixhawk"}
+
+        with self._upload_lock:
+            self._upload_paused.set()
+            time.sleep(0.05)
+            try:
+                self._connection.mav.param_request_read_send(
+                    self._connection.target_system,
+                    self._connection.target_component,
+                    param_id.encode(),
+                    -1,  # -1 = identify by name
+                )
+                msg = self._connection.recv_match(
+                    type="PARAM_VALUE", blocking=True, timeout=timeout
+                )
+                if msg and msg.param_id.rstrip('\x00') == param_id:
+                    return {"success": True, "value": float(msg.param_value)}
+                return {"success": False, "message": f"No response for {param_id}"}
+            except Exception as exc:
+                logger.error("get_param error: %s", exc)
+                return {"success": False, "message": str(exc)}
+            finally:
+                self._upload_paused.clear()
+
+    def set_battery_failsafe_params(
+        self,
+        low_volt: float,
+        crt_volt: float,
+        low_act: int,
+        crt_act: int,
+    ) -> Dict[str, Any]:
+        """
+        Write ArduRover battery failsafe parameters via PARAM_SET.
+          low_volt: BATT_LOW_VOLT  (volts; 0 = disabled)
+          crt_volt: BATT_CRT_VOLT  (volts; 0 = disabled)
+          low_act:  BATT_FS_LOW_ACT (0=Warn,1=RTL,2=Hold,3=SRTL→RTL,4=SRTL→Hold,5=Disarm)
+          crt_act:  BATT_FS_CRT_ACT (same enumeration)
+        """
+        if not self._connection:
+            return {"success": False, "message": "Not connected to Pixhawk"}
+
+        params = [
+            ("BATT_LOW_VOLT", float(low_volt),  mavutil.mavlink.MAV_PARAM_TYPE_REAL32),
+            ("BATT_CRT_VOLT", float(crt_volt),  mavutil.mavlink.MAV_PARAM_TYPE_REAL32),
+            ("BATT_FS_LOW_ACT", float(low_act), mavutil.mavlink.MAV_PARAM_TYPE_INT8),
+            ("BATT_FS_CRT_ACT", float(crt_act), mavutil.mavlink.MAV_PARAM_TYPE_INT8),
+        ]
+
+        with self._upload_lock:
+            self._upload_paused.set()
+            time.sleep(0.1)
+            try:
+                target_sys  = self._connection.target_system
+                target_comp = self._connection.target_component
+                for param_id, value, ptype in params:
+                    self._connection.mav.param_set_send(
+                        target_sys, target_comp,
+                        param_id.encode(), value, ptype,
+                    )
+                    ack = self._connection.recv_match(
+                        type="PARAM_VALUE", blocking=True, timeout=2.0
+                    )
+                    logger.info("Set %s = %s (ack=%s)", param_id, value, ack is not None)
+                return {"success": True, "message": "Battery failsafe parameters written"}
+            except Exception as exc:
+                logger.error("set_battery_failsafe_params error: %s", exc)
+                return {"success": False, "message": str(exc)}
+            finally:
+                self._upload_paused.clear()
+
     def arm(self, do_arm: bool, force: bool = False) -> Dict[str, Any]:
         """
         Arm or disarm the vehicle.
@@ -622,6 +698,20 @@ class MAVLinkConnection:
                         self._data["gps_heading_deg"] = heading
                         self._gps_last_update = time.time()
 
+            except OSError as exc:
+                # SerialException (device disconnected, port vanished, etc.) is a
+                # subclass of OSError.  Tear down the broken connection and reconnect.
+                logger.warning("Serial I/O error: %s — reconnecting in 5 s...", exc)
+                with self._lock:
+                    self._data["connected"] = False
+                try:
+                    self._connection.close()
+                except Exception:
+                    pass
+                self._connection = None
+                time.sleep(5.0)
+                if not self._connect():
+                    logger.warning("Reconnect failed — will retry next loop iteration")
             except Exception as exc:
                 logger.error("Read error: %s", exc)
                 time.sleep(0.5)

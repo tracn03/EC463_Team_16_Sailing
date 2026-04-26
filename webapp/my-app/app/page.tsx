@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { Play, Navigation, Battery, Wind, Gauge, Save, Download, Upload, CheckCircle, MapPin } from 'lucide-react';
-import { saveMission, exportMissionFile, uploadMissionToPixhawk, armVehicle, forceArmVehicle, disarmVehicle, setVehicleMode, createFence, uploadFencesToPixhawk, type VehicleMode } from '@/lib/missionApi';
+import { Play, Navigation, Battery, Wind, Gauge, Save, Download, Upload, CheckCircle, MapPin, ShieldAlert } from 'lucide-react';
+import { saveMission, exportMissionFile, uploadMissionToPixhawk, armVehicle, forceArmVehicle, disarmVehicle, setVehicleMode, createFence, uploadFencesToPixhawk, getBatteryFailsafe, setBatteryFailsafe, type VehicleMode, type BatteryFailsafeParams } from '@/lib/missionApi';
 import type { FenceZone } from './components/MapComponent';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:8000/api/telemetry/ws';
@@ -230,9 +230,11 @@ interface Waypoint {
   lat: number;
   lng: number;
   order: number;
+  type: 'nav' | 'rtl';
 }
 
 export default function MissionPlanner() {
+  const [activeTab, setActiveTab] = useState<'mission' | 'failsafe'>('mission');
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [status, setStatus] = useState<'idle' | 'running' | 'completed'>('idle');
   const [savedMissionId, setSavedMissionId] = useState<number | null>(null);
@@ -272,6 +274,22 @@ export default function MissionPlanner() {
   const [fenceDrawingMode, setFenceDrawingMode] = useState<FenceDrawingMode>(null);
   const [pendingFenceVertices, setPendingFenceVertices] = useState<{ lat: number; lng: number }[]>([]);
   const [fenceUploadError, setFenceUploadError] = useState<string | null>(null);
+
+  // ── Location search state ───────────────────────────────────────────────────
+  const [locationQuery, setLocationQuery] = useState('');
+  const [locationResults, setLocationResults] = useState<Array<{ display_name: string; lat: string; lon: string }>>([]);
+  const [locationSearching, setLocationSearching] = useState(false);
+  const [showLocationResults, setShowLocationResults] = useState(false);
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const locationSearchRef = useRef<HTMLDivElement>(null);
+
+  // ── Battery failsafe state ──────────────────────────────────────────────────
+  const [battFs, setBattFs] = useState<BatteryFailsafeParams>({
+    low_volt: 0, crt_volt: 0, low_act: 0, crt_act: 2,
+  });
+  const [battFsLoading, setBattFsLoading] = useState(false);
+  const [battFsError, setBattFsError] = useState<string | null>(null);
+  const [battFsSuccess, setBattFsSuccess] = useState(false);
 
   // Vehicle control state
   const [vehicleLoading, setVehicleLoading] = useState<'arm' | 'forceArm' | 'disarm' | 'mode' | null>(null);
@@ -318,6 +336,17 @@ export default function MissionPlanner() {
     };
   }, []);
 
+  // Close location dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (locationSearchRef.current && !locationSearchRef.current.contains(e.target as Node)) {
+        setShowLocationResults(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // When in fence-drawing mode, map clicks add fence vertices instead of waypoints.
   // fenceDrawingMode is read inside the function; the onMapClickRef in MapComponent
   // always holds the latest version so switching modes takes effect immediately.
@@ -331,6 +360,7 @@ export default function MissionPlanner() {
           lat,
           lng,
           order: prevWaypoints.length + 1,
+          type: 'nav',
         };
         return [...prevWaypoints, newWaypoint];
       });
@@ -346,7 +376,11 @@ export default function MissionPlanner() {
     try {
       const mission = await saveMission({
         name: missionName,
-        waypoints: waypoints.map(wp => ({ latitude: wp.lat, longitude: wp.lng })),
+        waypoints: waypoints.map(wp =>
+          wp.type === 'rtl'
+            ? { latitude: 0, longitude: 0, command: 20 }
+            : { latitude: wp.lat, longitude: wp.lng }
+        ),
       });
       setSavedMissionId(mission.id);
 
@@ -380,6 +414,61 @@ export default function MissionPlanner() {
   const handleStartMission = () => runUpload(true);
   const handleReupload = () => runUpload(false);
 
+  // Load battery failsafe params once when the vehicle connects
+  useEffect(() => {
+    if (!telemetry.connected) return;
+    getBatteryFailsafe().then(data => {
+      setBattFs({
+        low_volt: data.BATT_LOW_VOLT ?? 0,
+        crt_volt: data.BATT_CRT_VOLT ?? 0,
+        low_act:  data.BATT_FS_LOW_ACT  ?? 0,
+        crt_act:  data.BATT_FS_CRT_ACT  ?? 2,
+      });
+    }).catch(() => {/* silently ignore — vehicle may not be connected */});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [telemetry.connected]);
+
+  const handleApplyBatteryFailsafe = async () => {
+    setBattFsLoading(true);
+    setBattFsError(null);
+    setBattFsSuccess(false);
+    try {
+      await setBatteryFailsafe(battFs);
+      setBattFsSuccess(true);
+      setTimeout(() => setBattFsSuccess(false), 3000);
+    } catch (e) {
+      setBattFsError(e instanceof Error ? e.message : 'Failed to write parameters');
+    } finally {
+      setBattFsLoading(false);
+    }
+  };
+
+  const handleLocationSearch = async () => {
+    if (!locationQuery.trim()) return;
+    setLocationSearching(true);
+    setShowLocationResults(false);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(locationQuery)}&format=json&limit=5`,
+        { headers: { 'Accept-Language': 'en' } }
+      );
+      const data: Array<{ display_name: string; lat: string; lon: string }> = await res.json();
+      setLocationResults(data);
+      setShowLocationResults(true);
+    } catch {
+      setLocationResults([]);
+    } finally {
+      setLocationSearching(false);
+    }
+  };
+
+  const handleLocationSelect = (result: { display_name: string; lat: string; lon: string }) => {
+    setMapCenter({ lat: parseFloat(result.lat), lng: parseFloat(result.lon) });
+    setLocationQuery(result.display_name.split(',')[0]);
+    setShowLocationResults(false);
+    setLocationResults([]);
+  };
+
   const handleSaveMission = async () => {
     if (waypoints.length === 0) return;
     setIsSaving(true);
@@ -387,7 +476,11 @@ export default function MissionPlanner() {
     try {
       const mission = await saveMission({
         name: missionName,
-        waypoints: waypoints.map(wp => ({ latitude: wp.lat, longitude: wp.lng })),
+        waypoints: waypoints.map(wp =>
+          wp.type === 'rtl'
+            ? { latitude: 0, longitude: 0, command: 20 }
+            : { latitude: wp.lat, longitude: wp.lng }
+        ),
       });
       setSavedMissionId(mission.id);
     } catch (err) {
@@ -479,6 +572,13 @@ export default function MissionPlanner() {
 
   // ─────────────────────────────────────────────────────────────────────────
 
+  const addRtlWaypoint = useCallback(() => {
+    setWaypoints(prev => [
+      ...prev,
+      { id: genId(), lat: 0, lng: 0, order: prev.length + 1, type: 'rtl' },
+    ]);
+  }, []);
+
   // useCallback with empty deps: uses functional updater so setWaypoints never
   // needs to be in the dep array. Stable reference prevents the markers useEffect
   // in MapComponent from re-running on every telemetry tick (fixes popup bug).
@@ -536,8 +636,8 @@ export default function MissionPlanner() {
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-50">
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 shadow-sm">
-        <div className="flex items-center gap-3">
+      <header className="bg-white border-b border-slate-200 px-6 shadow-sm flex items-center gap-6">
+        <div className="flex items-center gap-3 py-4 flex-shrink-0">
           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Navigation className="w-5 h-5 text-white" />
           </div>
@@ -545,6 +645,32 @@ export default function MissionPlanner() {
             BO-AT Mission Planner
           </h1>
         </div>
+
+        {/* Tab navigation */}
+        <nav className="flex h-full gap-1">
+          <button
+            onClick={() => setActiveTab('mission')}
+            className={`flex items-center gap-2 px-4 py-1 text-sm font-semibold border-b-2 transition-colors duration-150 ${
+              activeTab === 'mission'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <MapPin className="w-4 h-4" />
+            Mission Planner
+          </button>
+          <button
+            onClick={() => setActiveTab('failsafe')}
+            className={`flex items-center gap-2 px-4 py-1 text-sm font-semibold border-b-2 transition-colors duration-150 ${
+              activeTab === 'failsafe'
+                ? 'border-amber-500 text-amber-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <ShieldAlert className="w-4 h-4" />
+            Battery Failsafe
+          </button>
+        </nav>
       </header>
 
       {/* Capsize Alert Banner */}
@@ -559,8 +685,189 @@ export default function MissionPlanner() {
         </div>
       )}
 
+      {/* Battery Critical Alert Banner */}
+      {battFs.crt_volt > 0 && telemetry.battery_voltage_v !== null && telemetry.battery_voltage_v < battFs.crt_volt && (
+        <div className="bg-red-600 text-white px-6 py-2.5 flex items-center justify-center gap-3 animate-pulse">
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <span className="font-bold text-sm tracking-wide uppercase">
+            Critical Battery — {telemetry.battery_voltage_v.toFixed(1)} V (threshold: {battFs.crt_volt} V)
+          </span>
+        </div>
+      )}
+
+      {/* Battery Low Warning Banner (only show if not already in critical) */}
+      {battFs.low_volt > 0 && telemetry.battery_voltage_v !== null &&
+        telemetry.battery_voltage_v >= (battFs.crt_volt || 0) &&
+        telemetry.battery_voltage_v < battFs.low_volt && (
+        <div className="bg-amber-500 text-white px-6 py-2.5 flex items-center justify-center gap-3">
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <span className="font-bold text-sm tracking-wide uppercase">
+            Low Battery — {telemetry.battery_voltage_v.toFixed(1)} V (threshold: {battFs.low_volt} V)
+          </span>
+        </div>
+      )}
+
+      {/* ── Battery Failsafe Tab ────────────────────────────────────────────── */}
+      {activeTab === 'failsafe' && (
+        <div className="flex-1 overflow-y-auto bg-slate-50">
+          <div className="max-w-2xl mx-auto px-6 py-10 space-y-6">
+
+            {/* Page header */}
+            <div>
+              <div className="flex items-center gap-3 mb-1">
+                <ShieldAlert className="w-6 h-6 text-amber-500" />
+                <h2 className="text-2xl font-bold text-slate-800">Battery Failsafe</h2>
+              </div>
+              <p className="text-sm text-slate-500">
+                Thresholds are written directly to the Pixhawk via MAVLink and enforced in hardware —
+                the vessel will respond even if the GCS disconnects. Set a voltage to 0 to disable that tier.
+              </p>
+            </div>
+
+            {/* Live battery status */}
+            <div className="bg-white rounded-xl border border-slate-200 p-5 flex items-center gap-6">
+              <BatteryIcon pct={telemetry.battery_pct} />
+              <div className="flex gap-8 text-sm">
+                <div>
+                  <div className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Voltage</div>
+                  <div className="text-xl font-bold text-slate-800">
+                    {telemetry.battery_voltage_v !== null ? `${telemetry.battery_voltage_v.toFixed(2)} V` : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Current</div>
+                  <div className="text-xl font-bold text-slate-800">
+                    {telemetry.battery_current_a !== null ? `${telemetry.battery_current_a.toFixed(1)} A` : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-400 uppercase tracking-wide mb-0.5">Charge</div>
+                  <div className="text-xl font-bold text-slate-800">
+                    {telemetry.battery_pct !== null ? `${telemetry.battery_pct} %` : '—'}
+                  </div>
+                </div>
+              </div>
+              <div className="ml-auto flex items-center gap-2 text-xs text-slate-400">
+                <span className={`w-2 h-2 rounded-full ${telemetry.connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
+                {telemetry.connected ? 'Radio connected' : 'Radio disconnected'}
+              </div>
+            </div>
+
+            {/* Low tier */}
+            <div className="bg-white rounded-xl border border-amber-200 p-5">
+              <h3 className="text-base font-semibold text-amber-700 mb-4 flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-amber-400 inline-block" />
+                Low Battery (Stage 1)
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Voltage threshold (V)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={battFs.low_volt}
+                    onChange={e => setBattFs(p => ({ ...p, low_volt: parseFloat(e.target.value) || 0 }))}
+                    className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">0 = disabled</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Action</label>
+                  <select
+                    value={battFs.low_act}
+                    onChange={e => setBattFs(p => ({ ...p, low_act: parseInt(e.target.value) }))}
+                    className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                  >
+                    <option value={0}>Warn Only</option>
+                    <option value={1}>RTL</option>
+                    <option value={2}>Hold</option>
+                    <option value={3}>SmartRTL → RTL</option>
+                    <option value={4}>SmartRTL → Hold</option>
+                    <option value={5}>Disarm</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Critical tier */}
+            <div className="bg-white rounded-xl border border-red-200 p-5">
+              <h3 className="text-base font-semibold text-red-700 mb-4 flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-red-500 inline-block" />
+                Critical Battery (Stage 2)
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Voltage threshold (V)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={battFs.crt_volt}
+                    onChange={e => setBattFs(p => ({ ...p, crt_volt: parseFloat(e.target.value) || 0 }))}
+                    className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-400"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Must be lower than Stage 1. 0 = disabled</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Action</label>
+                  <select
+                    value={battFs.crt_act}
+                    onChange={e => setBattFs(p => ({ ...p, crt_act: parseInt(e.target.value) }))}
+                    className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-400 bg-white"
+                  >
+                    <option value={0}>Warn Only</option>
+                    <option value={1}>RTL</option>
+                    <option value={2}>Hold</option>
+                    <option value={3}>SmartRTL → RTL</option>
+                    <option value={4}>SmartRTL → Hold</option>
+                    <option value={5}>Disarm</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Validation / feedback */}
+            {battFs.crt_volt > 0 && battFs.low_volt > 0 && battFs.crt_volt >= battFs.low_volt && (
+              <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                Critical voltage must be strictly lower than the low voltage threshold.
+              </div>
+            )}
+            {battFsError && (
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                {battFsError}
+              </div>
+            )}
+            {battFsSuccess && (
+              <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" /> Parameters written to Pixhawk successfully.
+              </div>
+            )}
+
+            <button
+              onClick={handleApplyBatteryFailsafe}
+              disabled={
+                battFsLoading ||
+                !telemetry.connected ||
+                (battFs.crt_volt > 0 && battFs.low_volt > 0 && battFs.crt_volt >= battFs.low_volt)
+              }
+              className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:from-slate-300 disabled:to-slate-400 text-white font-semibold py-3 px-4 rounded-xl text-sm shadow-md shadow-amber-500/20 disabled:shadow-none transition-all duration-200"
+            >
+              {battFsLoading ? 'Writing to Pixhawk…' : 'Apply to Pixhawk'}
+            </button>
+            {!telemetry.connected && (
+              <p className="text-xs text-slate-400 text-center -mt-4">Connect the radio to apply changes</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
+      {activeTab === 'mission' && <div className="flex-1 flex overflow-hidden">
         {/* Left column: map + orientation panel */}
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 relative min-h-0">
@@ -577,6 +884,7 @@ export default function MissionPlanner() {
               fences={fences}
               pendingFence={pendingFence}
               isDrawingFence={fenceDrawingMode !== null}
+              mapCenter={mapCenter}
             />
           </div>
 
@@ -722,6 +1030,63 @@ export default function MissionPlanner() {
         {/* Control Panel */}
         <div className="w-96 bg-white border-l border-slate-200 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
+            {/* ── Location Search ──────────────────────────────────────── */}
+            <div ref={locationSearchRef} className="relative">
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                Search Location
+              </label>
+              <form
+                onSubmit={(e) => { e.preventDefault(); handleLocationSearch(); }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={locationQuery}
+                  onChange={(e) => setLocationQuery(e.target.value)}
+                  onFocus={() => locationResults.length > 0 && setShowLocationResults(true)}
+                  placeholder="Search for a place…"
+                  className="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent placeholder-slate-400"
+                />
+                <button
+                  type="submit"
+                  disabled={locationSearching || !locationQuery.trim()}
+                  className="px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white rounded-lg text-sm font-semibold transition-colors duration-150 flex-shrink-0"
+                >
+                  {locationSearching ? (
+                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                    </svg>
+                  )}
+                </button>
+              </form>
+
+              {/* Results dropdown */}
+              {showLocationResults && locationResults.length > 0 && (
+                <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden">
+                  {locationResults.map((result, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleLocationSelect(result)}
+                      className="w-full text-left px-3 py-2.5 text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700 border-b border-slate-100 last:border-0 transition-colors duration-100 truncate"
+                    >
+                      {result.display_name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {showLocationResults && locationResults.length === 0 && !locationSearching && (
+                <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2.5 text-sm text-slate-400">
+                  No results found
+                </div>
+              )}
+            </div>
 
             {/* ── Vehicle Control ─────────────────────────────────────── */}
             <div>
@@ -1053,11 +1418,24 @@ export default function MissionPlanner() {
 
             {/* Waypoints List */}
             <div>
-              <h3 className="text-lg font-bold text-slate-800 mb-3 flex items-center gap-2">
-                <Navigation className="w-5 h-5 text-blue-500" />
-                Waypoints
-              </h3>
-              
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                  <Navigation className="w-5 h-5 text-blue-500" />
+                  Waypoints
+                </h3>
+                <button
+                  onClick={addRtlWaypoint}
+                  disabled={waypoints.length === 0}
+                  title="Append a Return to Launch command"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 hover:bg-amber-100 disabled:bg-slate-50 disabled:text-slate-300 text-amber-700 border border-amber-300 disabled:border-slate-200 transition-colors duration-150"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                  </svg>
+                  + RTL
+                </button>
+              </div>
+
               {waypoints.length === 0 ? (
                 <div className="text-center py-8 px-4 bg-slate-50 rounded-lg border border-dashed border-slate-300">
                   <p className="text-sm text-slate-500">
@@ -1067,10 +1445,53 @@ export default function MissionPlanner() {
               ) : (
                 <div className="space-y-2 max-h-64 overflow-y-auto">
                   {waypoints.map((wp) => {
-                    // Map 1-indexed order to 0-indexed MAVLink seq for status comparison
                     const seq = wp.order - 1;
                     const isActive = status === 'running' && telemetry.current_waypoint_seq === seq;
                     const isCompleted = status === 'running' && telemetry.current_waypoint_seq !== null && seq < telemetry.current_waypoint_seq;
+
+                    if (wp.type === 'rtl') {
+                      return (
+                        <div
+                          key={wp.id}
+                          className={`rounded-lg p-3 transition-colors duration-150 group ${
+                            isActive
+                              ? 'bg-orange-50 border border-orange-300 ring-1 ring-orange-300'
+                              : isCompleted
+                              ? 'bg-amber-50 opacity-60 border border-amber-200'
+                              : 'bg-amber-50 border border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className={`w-6 h-6 rounded-full text-white text-xs font-bold flex items-center justify-center ${isActive ? 'bg-orange-500' : isCompleted ? 'bg-slate-400' : 'bg-amber-500'}`}>
+                                {isCompleted ? '✓' : wp.order}
+                              </span>
+                              <div>
+                                <div className={`font-semibold text-sm ${isActive ? 'text-orange-700' : isCompleted ? 'text-slate-400' : 'text-amber-800'}`}>
+                                  Return to Launch
+                                </div>
+                                <div className="text-xs text-amber-600">MAV_CMD_NAV_RETURN_TO_LAUNCH</div>
+                              </div>
+                              {isActive && (
+                                <span className="ml-auto text-xs font-semibold text-orange-600 flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse" />
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => removeWaypoint(wp.id)}
+                              className="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                     <div
                       key={wp.id}
@@ -1128,7 +1549,8 @@ export default function MissionPlanner() {
 
           </div>
         </div>
-      </div>
+      </div>}
+
     </div>
   );
 }
