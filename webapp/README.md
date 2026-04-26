@@ -62,18 +62,8 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api
 NEXT_PUBLIC_WS_URL=ws://localhost:8000/api/telemetry/ws
 ```
 
-For Raspberry Pi or remote deployments, replace `localhost` with the host's IP address:
-
-```bash
-NEXT_PUBLIC_API_URL=http://192.168.1.50:8000/api
-NEXT_PUBLIC_WS_URL=ws://192.168.1.50:8000/api/telemetry/ws
-```
-
----
 
 ## Launching the App
-
-### Option A — Manual (recommended for development)
 
 **Backend** — open a terminal in the `webapp` folder:
 
@@ -110,7 +100,7 @@ Open `http://localhost:3000` in your browser.
 
 ---
 
-### Option B — Docker (all platforms)
+### Option B — Docker (WIP)
 
 Requires Docker Desktop to be running.
 
