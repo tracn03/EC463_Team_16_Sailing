@@ -125,6 +125,28 @@ export async function setVehicleMode(mode: VehicleMode): Promise<{ message: stri
   });
 }
 
+// ── Battery failsafe types & endpoints ──────────────────────────────────────
+
+export interface BatteryFailsafeParams {
+  low_volt: number;   // BATT_LOW_VOLT  (volts; 0 = disabled)
+  crt_volt: number;   // BATT_CRT_VOLT  (volts; 0 = disabled)
+  low_act: number;    // BATT_FS_LOW_ACT (0=Warn,1=RTL,2=Hold,3=SRTL→RTL,4=SRTL→Hold,5=Disarm)
+  crt_act: number;    // BATT_FS_CRT_ACT (same enum)
+}
+
+/** Read current battery failsafe parameters from the Pixhawk. Any null value means the param read timed out. */
+export async function getBatteryFailsafe(): Promise<{ BATT_LOW_VOLT: number | null; BATT_CRT_VOLT: number | null; BATT_FS_LOW_ACT: number | null; BATT_FS_CRT_ACT: number | null }> {
+  return apiFetch('/vehicle/battery-failsafe');
+}
+
+/** Write battery failsafe parameters to the Pixhawk. */
+export async function setBatteryFailsafe(params: BatteryFailsafeParams): Promise<{ message: string }> {
+  return apiFetch('/vehicle/battery-failsafe', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 // ── Geofence types & endpoints ───────────────────────────────────────────────
 
 export type FenceType = 'inclusion' | 'exclusion';

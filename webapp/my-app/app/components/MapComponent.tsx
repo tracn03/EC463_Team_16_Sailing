@@ -9,6 +9,7 @@ interface Waypoint {
   lat: number;
   lng: number;
   order: number;
+  type?: 'nav' | 'rtl';
 }
 
 interface VesselPosition {
@@ -34,6 +35,8 @@ interface MapComponentProps {
   fences?: FenceZone[];
   pendingFence?: { type: 'inclusion' | 'exclusion'; vertices: { lat: number; lng: number }[] } | null;
   isDrawingFence?: boolean;
+  // Location search
+  mapCenter?: { lat: number; lng: number } | null;
 }
 
 function buildVesselIcon(heading: number | null, fix: boolean): L.DivIcon {
@@ -67,6 +70,7 @@ export default function MapComponent({
   fences = [],
   pendingFence = null,
   isDrawingFence = false,
+  mapCenter = null,
 }: MapComponentProps) {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -104,8 +108,15 @@ export default function MapComponent({
     return () => {
       map.remove();
       mapRef.current = null;
+      vesselMarkerRef.current = null;
     };
   }, []);
+
+  // ── Fly to searched location ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current || !mapCenter) return;
+    mapRef.current.flyTo([mapCenter.lat, mapCenter.lng], 14, { animate: true, duration: 1.2 });
+  }, [mapCenter]);
 
   // ── Cursor style: crosshair while drawing a fence ─────────────────────────
   useEffect(() => {
@@ -242,15 +253,17 @@ export default function MapComponent({
     arrowsRef.current.forEach(a => map.removeLayer(a));
     arrowsRef.current = [];
 
-    waypoints.forEach((wp, index) => {
+    const navWaypoints = waypoints.filter(wp => wp.type !== 'rtl');
+
+    navWaypoints.forEach((wp, index) => {
       const isActive    = activeWaypointOrder !== undefined && wp.order === activeWaypointOrder;
       const isCompleted = activeWaypointOrder !== undefined && wp.order < activeWaypointOrder;
 
       let markerColor = '#3b82f6';
-      if (isActive)                                           markerColor = '#f97316';
-      else if (isCompleted)                                   markerColor = '#94a3b8';
-      else if (index === 0 && waypoints.length > 1)           markerColor = '#10b981';
-      else if (index === waypoints.length - 1 && waypoints.length > 1) markerColor = '#ef4444';
+      if (isActive)                                                markerColor = '#f97316';
+      else if (isCompleted)                                        markerColor = '#94a3b8';
+      else if (index === 0 && navWaypoints.length > 1)             markerColor = '#10b981';
+      else if (index === navWaypoints.length - 1 && navWaypoints.length > 1) markerColor = '#ef4444';
 
       const icon = L.divIcon({
         className: 'custom-waypoint-marker',
@@ -266,8 +279,8 @@ export default function MapComponent({
       });
 
       let distanceDisplay = '';
-      if (index < waypoints.length - 1) {
-        const next = waypoints[index + 1];
+      if (index < navWaypoints.length - 1) {
+        const next = navWaypoints[index + 1];
         const d = calculateDistance(wp.lat, wp.lng, next.lat, next.lng);
         distanceDisplay = d < 1000 ? `Next: ${Math.round(d)}m` : `Next: ${(d / 1000).toFixed(2)}km`;
       }
@@ -286,8 +299,8 @@ export default function MapComponent({
       const label = L.DomUtil.create('strong', '', header);
       Object.assign(label.style, { color: '#1e293b', fontSize: '14px' });
       label.textContent =
-        index === 0 && waypoints.length > 1 ? 'Start Point' :
-        index === waypoints.length - 1 && waypoints.length > 1 ? 'End Point' :
+        index === 0 && navWaypoints.length > 1 ? 'Start Point' :
+        index === navWaypoints.length - 1 && navWaypoints.length > 1 ? 'End Point' :
         `Waypoint ${wp.order}`;
 
       const coords = L.DomUtil.create('div', '', container);
@@ -323,9 +336,9 @@ export default function MapComponent({
       markersRef.current[wp.id] = marker;
     });
 
-    if (waypoints.length > 1) {
+    if (navWaypoints.length > 1) {
       polylineRef.current = L.polyline(
-        waypoints.map(wp => [wp.lat, wp.lng] as [number, number]),
+        navWaypoints.map(wp => [wp.lat, wp.lng] as [number, number]),
         { color: '#3b82f6', weight: 4, opacity: 0.8, lineJoin: 'round', lineCap: 'round' }
       ).addTo(map);
     }
