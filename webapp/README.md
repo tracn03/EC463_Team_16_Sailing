@@ -349,9 +349,6 @@ All endpoints are prefixed with `/api`.
 **"No heartbeat received" in backend logs**
 The Pixhawk is not sending MAVLink heartbeats. Check: SiK radio power, USB cable, baud rate (must be 57600), and that ArduPilot firmware is running.
 
-**"Not connected to Pixhawk" errors**
-The serial port is wrong or the backend cannot open it. On Linux, add your user to the `dialout` group: `sudo usermod -aG dialout $USER` and re-login.
-
 **Frontend shows "Connect the radio to apply changes"**
 The WebSocket telemetry connection is not established. Verify the backend is running, the SiK radio is plugged in, and `NEXT_PUBLIC_WS_URL` points to the correct host.
 
@@ -360,13 +357,3 @@ The Pixhawk returned a non-zero MISSION_ACK code. Common causes: too many waypoi
 
 **Fence upload warning (amber banner) after Start Mission**
 The fence uploaded to the database and the mission started, but writing the fence parameters to the Pixhawk failed. The vehicle will still execute the waypoint mission but geofencing may not be active. Check backend logs for the specific parameter error.
-
-**Docker — database lost after restart**
-The SQLite file is not persisted across container restarts by default. Add a volume to `docker-compose.yml`:
-```yaml
-services:
-  server:
-    volumes:
-      - ./data:/app/data
-```
-And update `mavlink_connection.py` to write the DB to `/app/data/boat_missions.db`.
